@@ -92,6 +92,36 @@ With the above, we can now call `broadcast.Write` in our http handlers and have
 all the events distributed to each queue. Because the events are queued, not
 listener blocks another.
 
+#### Bounded, isolated backlogs
+
+`NewBroadcaster` gives every sink an unbounded backlog, which is safe but lets
+one permanently slow listener accumulate events without limit. When a slow
+listener must not be allowed to grow memory, use
+`NewBroadcasterWithConfig` with a per-sink bounded capacity and a full-queue
+policy:
+
+```go
+broadcast := NewBroadcasterWithConfig(BroadcasterConfig{
+    PerSinkQueueCapacity: 1000,
+    FullQueuePolicy:      PolicyDropNew,   // or PolicyRemoveSink
+    DrainTimeout:         5 * time.Second,
+})
+```
+
+Each sink gets its own goroutine and bounded queue, so a slow sink can only
+fill its own backlog; it never blocks publication or the other sinks. When a
+backlog is full the broadcaster either rejects just that event for that sink
+(`PolicyDropNew`) or removes the faulty sink entirely (`PolicyRemoveSink`).
+The cumulative number of discarded events and the reason
+(`DropQueueFull`, `DropSinkRemoved`, `DropDrainTimeout`, `DropSinkClosed`)
+stay queryable through `Stats` and `SinkStats`, so a subscription's data loss
+is never silent.
+
+`Close` stops accepting new events, drains each backlog up to `DrainTimeout`,
+expires anything still unflushed (reported both in the returned joined error
+and in the stats), and closes the underlying sinks. A failure closing one sink
+does not prevent the others from closing, and `Close` is idempotent.
+
 ### Extending
 
 For the most part, the above is sufficient for a lot of applications. However,
